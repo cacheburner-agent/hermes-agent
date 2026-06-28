@@ -469,6 +469,13 @@ async function normalizeContent(content) {
       targetText: reactionTargetText(target),
     };
   }
+  // spectrum-ts converts Apple's URL balloon to a richlink content object
+  // with the URL in content.url. Extract it as plain text so the Python
+  // adapter sees a text message containing the link, not an opaque
+  // "richlink" content type it can't handle.
+  if (content.type === "richlink") {
+    return { type: "text", text: content.url || "" };
+  }
   return { type: content.type || "unknown" };
 }
 
