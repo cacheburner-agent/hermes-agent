@@ -1694,7 +1694,23 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
                            default_headers=build_or_headers()), model or _OPENROUTER_MODEL
         # Pool exists but is exhausted (no usable runtime key) — fall through to
         # the OPENROUTER_API_KEY env-var path rather than failing outright.
+        # Ensure .env is loaded into os.environ before reading, in case the
+        # credential pool seeding or main provider setup haven't triggered
+        # env loading at this point in the import chain (the main agent
+        # resolves credentials through the same pool system; the auxiliary
+        # client may be invoked before the main agent's provider setup has
+        # run load_hermes_dotenv).
         logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
+
+    # Ensure .env is loaded before falling through to os.getenv — the
+    # credential pool _seed_from_env path may not have populated an entry
+    # for OPENROUTER_API_KEY (e.g. pool exists but entry is None), and a
+    # bare os.getenv can miss when load_hermes_dotenv hasn't run yet.
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv()
+    except Exception:
+        pass
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
