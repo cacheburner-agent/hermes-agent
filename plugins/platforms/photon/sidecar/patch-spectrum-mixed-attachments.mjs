@@ -116,6 +116,9 @@ function patchChildIndices(source) {
 }
 
 export function patchSpectrumTs(root = scriptDir()) {
+  const results = [];
+
+  // --- Patch @spectrum-ts/imessage inbound mapper ---
   const dist = path.join(
     root,
     "node_modules",
@@ -133,7 +136,8 @@ export function patchSpectrumTs(root = scriptDir()) {
   for (const file of files) {
     const raw = fs.readFileSync(file, "utf8");
     if (raw.includes(MARKER)) {
-      return { patched: false, file, reason: "already patched" };
+      results.push({ patched: false, file, reason: "already patched" });
+      continue;
     }
     // Normalize to LF for matching so the patch works regardless of the
     // checkout's line-ending style (Windows git autocrlf produces CRLF,
@@ -157,9 +161,59 @@ export function patchSpectrumTs(root = scriptDir()) {
       patched = patched.split("\n").join(CRLF);
     }
     fs.writeFileSync(file, patched, "utf8");
-    return { patched: true, file };
+    results.push({ patched: true, file });
   }
-  throw new Error("could not find @spectrum-ts/imessage iMessage inbound chunk to patch");
+
+  // --- Patch spectrum-ts dataDetectionOption ---
+  // spectrum-ts enables Apple's data-detector pass when an outbound text
+  // message contains a link (enableDataDetection: true). Apple's IMAgentKit
+  // backend rejects this with a ValidationError, causing the entire send to
+  // fail with HTTP 500. Override the function to always return {} so links
+  // are sent as plain text without triggering Apple's data-detection pipeline.
+  const coreDist = path.join(root, "node_modules", "spectrum-ts", "dist");
+  if (fs.existsSync(coreDist)) {
+    const coreFiles = fs.readdirSync(coreDist)
+      .filter((name) => name.endsWith(".js") && name.startsWith("chunk-"))
+      .map((name) => path.join(coreDist, name));
+
+    const DATA_DETECTION_PATTERN =
+      'var dataDetectionOption = (hasLinks) => hasLinks ? { enableDataDetection: true } : {};';
+    const DATA_DETECTION_REPLACEMENT =
+      'var dataDetectionOption = (hasLinks) => ({});';
+
+    for (const file of coreFiles) {
+      const raw = fs.readFileSync(file, "utf8");
+      if (raw.includes("// Hermes patch: disable data detection")) {
+        results.push({ patched: false, file, reason: "already patched" });
+        continue;
+      }
+      if (!raw.includes(DATA_DETECTION_PATTERN)) {
+        continue;
+      }
+      const CR = String.fromCharCode(13);
+      const CRLF = CR + "\n";
+      const usedCRLF = raw.includes(CRLF);
+      const original = usedCRLF ? raw.split(CRLF).join("\n") : raw;
+      let patched = replaceOnce(
+        original,
+        DATA_DETECTION_PATTERN,
+        DATA_DETECTION_REPLACEMENT,
+        "dataDetectionOption"
+      );
+      patched = `// Hermes patch: disable data detection\n${patched}`;
+      if (usedCRLF) {
+        patched = patched.split("\n").join(CRLF);
+      }
+      fs.writeFileSync(file, patched, "utf8");
+      results.push({ patched: true, file });
+      break;
+    }
+  }
+
+  if (results.length === 0) {
+    throw new Error("could not find @spectrum-ts/imessage iMessage inbound chunk to patch");
+  }
+  return results.length === 1 ? results[0] : { patched: results.some(r => r.patched), results };
 }
 
 const _invokedDirectly =
